@@ -42,7 +42,13 @@ export async function getRetriever(): Promise<VectorStoreRetriever> {
       });
 
       return store.asRetriever(5);
-    })();
+    })().catch((error) => {
+      // Reset the cached promise on error so subsequent requests can retry initialization.
+      // Without this, a failed initialization (e.g., transient network error) poisons the
+      // singleton and all future requests will reject until the Cloud Run instance recycles.
+      retrieverPromise = null;
+      throw error;
+    });
   }
 
   return retrieverPromise;

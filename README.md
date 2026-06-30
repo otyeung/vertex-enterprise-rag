@@ -65,6 +65,8 @@ VPC_CONNECTOR="$(terraform -chdir=terraform output -raw vpc_connector_id)"
 
 ## Deploy Ingestion Function
 
+The ingestion function provisions the shared PGVector schema tables (`langchain_pg_embedding` and `langchain_pg_collection`) on first execution. Deploy and trigger this function before deploying the Cloud Run app to ensure the retriever can connect to existing tables.
+
 ```bash
 gcloud functions deploy vertex-rag-ingestion \
   --gen2 \
@@ -79,6 +81,15 @@ gcloud functions deploy vertex-rag-ingestion \
   --set-env-vars="GCP_PROJECT_ID=vertex-enterprise-rag,GCP_REGION=us-central1,DB_HOST=${DB_HOST},DB_PORT=5432,DB_NAME=${DB_NAME},DB_USER=${DB_USER},PGVECTOR_COLLECTION=enterprise_documents" \
   --set-secrets="DB_PASSWORD=${DB_SECRET}:latest"
 ```
+
+After deploying the function, upload a test PDF to trigger schema provisioning:
+
+```bash
+echo "Test document" > test.pdf
+gcloud storage cp test.pdf "gs://${RAW_BUCKET}/test.pdf"
+```
+
+Wait for the ingestion function to complete (check Cloud Functions logs). The Node.js retriever in the Cloud Run app expects these tables to exist at startup.
 
 ## Build and Deploy Cloud Run App
 

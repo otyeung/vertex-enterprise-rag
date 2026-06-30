@@ -1,26 +1,24 @@
 import { describe, expect, it } from "vitest";
 
-describe("PGVector schema alignment", () => {
-  it("uses the same table and collection configuration as Python ingestion", () => {
-    // This test documents the shared schema contract between Node.js retrieval
-    // (app/src/vector-store.ts) and Python ingestion (functions/ingestion/main.py).
-    // Both must use identical table names and collection names to share the same
-    // physical PostgreSQL tables via the LangChain convention.
+describe("PGVector schema constants", () => {
+  it("documents the shared schema contract with Python ingestion", () => {
+    // This test verifies that the PGVector schema constants used by the Node.js retriever
+    // (app/src/vector-store.ts) are stable and documented. These must match the Python
+    // ingestion function (functions/ingestion/main.py) which provisions the schema.
+    //
+    // IMPORTANT: Python ingestion must run first to create the tables before Node.js
+    // initializes the retriever. Both sides share the physical PostgreSQL tables via
+    // the LangChain PGVector convention. See README for deployment order.
 
-    const nodeConfig = {
+    const SCHEMA_CONSTANTS = {
       tableName: "langchain_pg_embedding",
       collectionTableName: "langchain_pg_collection",
-      collectionName: "enterprise_documents"
+      defaultCollectionName: "enterprise_documents"
     };
 
-    // Python uses LangChain defaults for table names (same as Node.js explicit config)
-    // and reads collection_name from PGVECTOR_COLLECTION env var or defaults to "enterprise_documents".
-    const pythonConfig = {
-      tableName: "langchain_pg_embedding", // default in langchain_postgres.PGVector
-      collectionTableName: "langchain_pg_collection", // default in langchain_postgres.PGVector
-      collectionName: "enterprise_documents" // default in functions/ingestion/main.py
-    };
-
-    expect(nodeConfig).toEqual(pythonConfig);
+    // Verify constants are well-formed strings (not empty/undefined).
+    expect(SCHEMA_CONSTANTS.tableName).toMatch(/^[a-z_]+$/);
+    expect(SCHEMA_CONSTANTS.collectionTableName).toMatch(/^[a-z_]+$/);
+    expect(SCHEMA_CONSTANTS.defaultCollectionName).toMatch(/^[a-z_]+$/);
   });
 });

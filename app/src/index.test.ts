@@ -13,7 +13,7 @@ describe("POST /ask", () => {
     expect(response.body.error).toBe("Invalid request body");
   });
 
-  it("returns an answer and logs telemetry asynchronously", async () => {
+  it("returns an answer and logs telemetry", async () => {
     const logToBigQuery = vi.fn().mockResolvedValue(undefined);
     const app = createApp({
       runRagQuery: vi.fn().mockResolvedValue({
