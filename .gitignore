@@ -1,3 +1,15 @@
 docs/
 value_props.md
 .worktrees/
+.terraform/
+node_modules/
+dist/
+__pycache__/
+*.pyc
+.env
+report-summary.txt
+app/node_modules/
+app/dist/
+terraform/.terraform/
+functions/ingestion/venv/
+.pytest_cache/
