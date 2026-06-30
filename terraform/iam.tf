@@ -14,6 +14,7 @@ locals {
     "roles/cloudsql.client",
     "roles/eventarc.eventReceiver",
     "roles/logging.logWriter",
+    "roles/run.invoker",
     "roles/secretmanager.secretAccessor"
   ])
 
@@ -61,4 +62,13 @@ resource "google_secret_manager_secret_iam_member" "app_db_password" {
   secret_id = google_secret_manager_secret.db_password.secret_id
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:${google_service_account.app.email}"
+}
+
+# Eventarc Gen2 GCS trigger prerequisites:
+# The Cloud Storage service agent needs Pub/Sub publisher role to publish events
+# for Eventarc GCS triggers to work.
+resource "google_project_iam_member" "gcs_eventarc_pubsub" {
+  project = var.project_id
+  role    = "roles/pubsub.publisher"
+  member  = "serviceAccount:service-${data.google_project.current.number}@gs-project-accounts.iam.gserviceaccount.com"
 }

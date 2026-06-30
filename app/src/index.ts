@@ -45,42 +45,40 @@ export function createApp(dependencies: Partial<AppDependencies> = {}) {
       const result = await deps.runRagQuery(query);
       const latencyMs = Math.round(performance.now() - startedAt);
 
-      void deps
-        .logToBigQuery({
-          log_id: crypto.randomUUID(),
-          timestamp: new Date().toISOString(),
-          user_id,
-          prompt: query,
-          response: result.answer,
-          prompt_tokens: result.tokenUsage.promptTokens,
-          completion_tokens: result.tokenUsage.completionTokens,
-          latency_ms: latencyMs,
-          status: "success"
-        })
-        .catch((error) => {
-          console.error("Failed to write BigQuery telemetry", error);
-        });
+      // Await telemetry before sending success response to ensure it completes.
+      await deps.logToBigQuery({
+        log_id: crypto.randomUUID(),
+        timestamp: new Date().toISOString(),
+        user_id,
+        prompt: query,
+        response: result.answer,
+        prompt_tokens: result.tokenUsage.promptTokens,
+        completion_tokens: result.tokenUsage.completionTokens,
+        latency_ms: latencyMs,
+        status: "success"
+      }).catch((error) => {
+        console.error("Failed to write BigQuery telemetry", error);
+      });
 
       response.status(200).json({ answer: result.answer, sources: result.sources });
     } catch (error) {
       const latencyMs = Math.round(performance.now() - startedAt);
       console.error("RAG request failed", error);
 
-      void deps
-        .logToBigQuery({
-          log_id: crypto.randomUUID(),
-          timestamp: new Date().toISOString(),
-          user_id,
-          prompt: query,
-          response: "",
-          prompt_tokens: 0,
-          completion_tokens: 0,
-          latency_ms: latencyMs,
-          status: "error"
-        })
-        .catch((telemetryError) => {
-          console.error("Failed to write BigQuery error telemetry", telemetryError);
-        });
+      // Best-effort error telemetry: await but don't mask original API error if telemetry fails.
+      await deps.logToBigQuery({
+        log_id: crypto.randomUUID(),
+        timestamp: new Date().toISOString(),
+        user_id,
+        prompt: query,
+        response: "",
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        latency_ms: latencyMs,
+        status: "error"
+      }).catch((telemetryError) => {
+        console.error("Failed to write BigQuery error telemetry", telemetryError);
+      });
 
       response.status(500).json({ error: "RAG request failed" });
     }

@@ -30,6 +30,14 @@ def _load_and_split_pdf(local_path: Path):
 
 
 def _write_documents(chunks):
+    # SHARED SCHEMA CONTRACT: This PGVector configuration MUST match the Node.js
+    # retrieval service (app/src/vector-store.ts) which uses @langchain/community
+    # PGVectorStore with the same table names and collection name.
+    # Both libraries share the physical PostgreSQL tables via convention.
+    # - Default table: "langchain_pg_embedding" (via LangChain defaults)
+    # - Default collection table: "langchain_pg_collection" (via LangChain defaults)
+    # - collection_name: "enterprise_documents" (or PGVECTOR_COLLECTION env var)
+    # Changes to this schema must be coordinated across both Python and Node.js code paths.
     embeddings = VertexAIEmbeddings(model_name="textembedding-gecko@latest")
     vector_store = PGVector(
         embeddings=embeddings,

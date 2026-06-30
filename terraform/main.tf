@@ -22,6 +22,11 @@ provider "google" {
   region  = var.region
 }
 
+# Data source for obtaining project number, required for GCS service agent IAM binding.
+data "google_project" "current" {
+  project_id = var.project_id
+}
+
 locals {
   labels = {
     app         = "vertex-enterprise-rag"
@@ -188,6 +193,14 @@ resource "google_cloud_run_v2_service" "app" {
         value = "enterprise_documents"
       }
     }
+  }
+
+  # Ignore container image changes after initial creation to prevent Terraform
+  # from reverting images deployed via `gcloud run deploy` CI/CD pipelines.
+  lifecycle {
+    ignore_changes = [
+      template[0].containers[0].image
+    ]
   }
 
   depends_on = [
