@@ -37,6 +37,8 @@ graph TD
 - Google Cloud project: `vertex-enterprise-rag`
 - Billing enabled
 - `gcloud` authenticated with permissions to create IAM, networking, Cloud SQL, Cloud Run, Cloud Functions, BigQuery, Secret Manager, Artifact Registry, and GCS resources
+- Terraform Google provider credentials configured with Application Default Credentials:
+  `gcloud auth application-default login`
 - Terraform 1.6+
 - Node.js 20+
 - Python 3.11+
