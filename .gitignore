@@ -7,4 +7,9 @@ dist/
 __pycache__/
 *.pyc
 .env
-package-lock.json
+report-summary.txt
+app/node_modules/
+app/dist/
+terraform/.terraform/
+functions/ingestion/venv/
+.pytest_cache/
