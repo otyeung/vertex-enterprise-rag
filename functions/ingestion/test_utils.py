@@ -20,16 +20,20 @@ def test_extract_storage_object_rejects_missing_name():
 
 
 def test_build_postgres_connection_string(monkeypatch):
-    monkeypatch.setenv("DB_HOST", "10.1.2.3")
-    monkeypatch.setenv("DB_PORT", "5432")
-    monkeypatch.setenv("DB_NAME", "rag_app")
-    monkeypatch.setenv("DB_USER", "rag_app")
-    monkeypatch.setenv("DB_PASSWORD", "secret")
+    host = "10.1.2.3"
+    port = "5432"
+    db_name = "rag_app"
+    user = "rag_app"
+    password = "secret"
 
-    assert (
-        build_postgres_connection_string()
-        == "postgresql+psycopg://rag_app:secret@10.1.2.3:5432/rag_app"
-    )
+    monkeypatch.setenv("DB_HOST", host)
+    monkeypatch.setenv("DB_PORT", port)
+    monkeypatch.setenv("DB_NAME", db_name)
+    monkeypatch.setenv("DB_USER", user)
+    monkeypatch.setenv("DB_PASSWORD", password)
+
+    expected = f"postgresql+psycopg://{user}:{password}@{host}:{port}/{db_name}"
+    assert build_postgres_connection_string() == expected
 
 
 def test_build_postgres_connection_string_lists_missing_values(monkeypatch):
