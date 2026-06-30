@@ -1,3 +1,4 @@
 docs/
 value_props.md
 .worktrees/
+.terraform/

@@ -63,28 +63,73 @@ resource "google_sql_user" "app_user" {
   password = random_password.db_password.result
 }
 
-resource "null_resource" "enable_pgvector" {
-  triggers = {
-    instance = google_sql_database_instance.postgres.name
-    database = google_sql_database.app.name
-    user     = google_sql_user.app_user.name
-  }
+resource "google_cloud_run_v2_job" "enable_pgvector" {
+  name     = "${var.name_prefix}-enable-pgvector"
+  location = var.region
 
-  provisioner "local-exec" {
-    command = <<EOT
-gcloud sql connect ${google_sql_database_instance.postgres.name} \
-  --project ${var.project_id} \
-  --user ${google_sql_user.app_user.name} \
-  --database ${google_sql_database.app.name} \
-  --quiet -- -c "CREATE EXTENSION IF NOT EXISTS vector;"
-EOT
-    environment = {
-      PGPASSWORD = random_password.db_password.result
+  template {
+    task_count = 1
+
+    template {
+      service_account = google_service_account.app.email
+      timeout         = "300s"
+      max_retries     = 0
+
+      vpc_access {
+        connector = google_vpc_access_connector.serverless.id
+        egress    = "PRIVATE_RANGES_ONLY"
+      }
+
+      containers {
+        image = "postgres:16"
+
+        command = [
+          "psql",
+          "-h", google_sql_database_instance.postgres.private_ip_address,
+          "-p", "5432",
+          "-U", google_sql_user.app_user.name,
+          "-d", google_sql_database.app.name,
+          "-c", "CREATE EXTENSION IF NOT EXISTS vector;"
+        ]
+
+        env {
+          name = "PGPASSWORD"
+          value_source {
+            secret_key_ref {
+              secret  = google_secret_manager_secret.db_password.secret_id
+              version = "latest"
+            }
+          }
+        }
+      }
     }
   }
 
   depends_on = [
     google_sql_database.app,
-    google_sql_user.app_user
+    google_sql_user.app_user,
+    google_secret_manager_secret_iam_member.app_db_password,
+    google_project_service.required
   ]
+}
+
+resource "null_resource" "enable_pgvector" {
+  triggers = {
+    instance = google_sql_database_instance.postgres.name
+    database = google_sql_database.app.name
+    user     = google_sql_user.app_user.name
+    job      = google_cloud_run_v2_job.enable_pgvector.name
+  }
+
+  provisioner "local-exec" {
+    command = <<EOT
+gcloud run jobs execute ${google_cloud_run_v2_job.enable_pgvector.name} \
+  --project ${var.project_id} \
+  --region ${var.region} \
+  --wait \
+  --quiet
+EOT
+  }
+
+  depends_on = [google_cloud_run_v2_job.enable_pgvector]
 }
