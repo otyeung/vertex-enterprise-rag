@@ -8,6 +8,12 @@ resource "google_service_account" "app" {
   display_name = "Enterprise RAG Cloud Run runtime"
 }
 
+data "google_storage_project_service_account" "gcs_account" {
+  project = var.project_id
+
+  depends_on = [google_project_service.required]
+}
+
 locals {
   ingestion_project_roles = toset([
     "roles/aiplatform.user",
@@ -70,5 +76,11 @@ resource "google_secret_manager_secret_iam_member" "app_db_password" {
 resource "google_project_iam_member" "gcs_eventarc_pubsub" {
   project = var.project_id
   role    = "roles/pubsub.publisher"
-  member  = "serviceAccount:service-${data.google_project.current.number}@gs-project-accounts.iam.gserviceaccount.com"
+  member  = "serviceAccount:${data.google_storage_project_service_account.gcs_account.email_address}"
+}
+
+resource "google_project_iam_member" "eventarc_service_agent" {
+  project = var.project_id
+  role    = "roles/eventarc.serviceAgent"
+  member  = "serviceAccount:service-${data.google_project.current.number}@gcp-sa-eventarc.iam.gserviceaccount.com"
 }

@@ -73,6 +73,8 @@ The ingestion function provisions the shared PGVector schema tables (`langchain_
 gcloud functions deploy vertex-rag-ingestion \
   --gen2 \
   --runtime=python311 \
+  --memory=1Gi \
+  --timeout=540s \
   --region=us-central1 \
   --source=functions/ingestion \
   --entry-point=ingest_pdf \
@@ -84,11 +86,10 @@ gcloud functions deploy vertex-rag-ingestion \
   --set-secrets="DB_PASSWORD=${DB_SECRET}:latest"
 ```
 
-After deploying the function, upload a test PDF to trigger schema provisioning:
+After deploying the function, upload a real PDF to trigger schema provisioning:
 
 ```bash
-echo "Test document" > test.pdf
-gcloud storage cp test.pdf "gs://${RAW_BUCKET}/test.pdf"
+gcloud storage cp ./sample.pdf "gs://${RAW_BUCKET}/sample.pdf"
 ```
 
 Wait for the ingestion function to complete (check Cloud Functions logs). The Node.js retriever in the Cloud Run app expects these tables to exist at startup.
@@ -107,7 +108,8 @@ gcloud run deploy vertex-rag-app \
   --region="${REGION}" \
   --service-account="${APP_SA}" \
   --vpc-connector="${VPC_CONNECTOR}" \
-  --egress-settings=private-ranges-only \
+  --vpc-egress=private-ranges-only \
+  --ingress=internal-and-cloud-load-balancing \
   --no-allow-unauthenticated \
   --set-env-vars="GCP_PROJECT_ID=${PROJECT_ID},GCP_REGION=${REGION},DB_HOST=${DB_HOST},DB_PORT=5432,DB_NAME=${DB_NAME},DB_USER=${DB_USER},BQ_DATASET=llm_ops_telemetry,BQ_TABLE=prompt_logs,PGVECTOR_COLLECTION=enterprise_documents" \
   --set-secrets="DB_PASSWORD=${DB_SECRET}:latest"
@@ -120,6 +122,8 @@ gcloud storage cp ./sample.pdf "gs://${RAW_BUCKET}/sample.pdf"
 ```
 
 ## Query the API
+
+The Cloud Run service is deployed with internal-and-load-balancer ingress for the enterprise blueprint. Call it from an internal Google Cloud client or through an HTTPS load balancer/IAP in front of Cloud Run. Direct local calls to the default `run.app` URL may return 404 because external ingress is intentionally blocked.
 
 ```bash
 SERVICE_URL="$(gcloud run services describe vertex-rag-app --region=us-central1 --format='value(status.url)')"

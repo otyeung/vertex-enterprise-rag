@@ -11,5 +11,8 @@ report-summary.txt
 app/node_modules/
 app/dist/
 terraform/.terraform/
+terraform/terraform.tfstate
+terraform/terraform.tfstate.backup
+terraform/*.tfplan
 functions/ingestion/venv/
 .pytest_cache/

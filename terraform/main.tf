@@ -22,7 +22,6 @@ provider "google" {
   region  = var.region
 }
 
-# Data source for obtaining project number, required for GCS service agent IAM binding.
 data "google_project" "current" {
   project_id = var.project_id
 }
