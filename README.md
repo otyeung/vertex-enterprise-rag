@@ -4,6 +4,18 @@ Enterprise Deployment Blueprint for GenAI on Google Cloud.
 
 This repository demonstrates a secure Retrieval-Augmented Generation landing zone for enterprise compliance and RFP intelligence. It separates document ingestion from inference, keeps enterprise data in a customer-controlled Google Cloud project, and captures LLMOps telemetry for governance and adoption reporting.
 
+## Tech Stack
+
+| Layer | Technology |
+| --- | --- |
+| Infrastructure | Terraform, Google Cloud provider |
+| AI | Vertex AI Gemini 1.5 Pro, Vertex AI Gecko text embeddings |
+| Ingestion | Python 3.11, Cloud Functions Gen 2, Eventarc, LangChain, pypdf |
+| API | Node.js 20, TypeScript, Express, LangChain.js |
+| Data | Cloud Storage, Cloud SQL PostgreSQL with pgvector, BigQuery |
+| Security | IAM service accounts, Secret Manager, private Cloud SQL networking, Serverless VPC Access |
+| Runtime | Cloud Run, Artifact Registry, Cloud Build |
+
 ## Architecture
 
 ```mermaid
@@ -43,6 +55,16 @@ graph TD
 - Node.js 20+
 - Python 3.11+
 - Docker
+
+## How to Use
+
+1. Deploy the Google Cloud landing zone with Terraform.
+2. Deploy the ingestion Cloud Function and upload a PDF to the raw bucket.
+3. Build and deploy the Cloud Run RAG API image.
+4. Query `POST /ask` from an internal Google Cloud client or through a load balancer/IAP path.
+5. Review prompt, response, token, latency, and status telemetry in BigQuery.
+
+The detailed copy-paste commands below follow that order. The ingestion function should be triggered at least once before the app handles real queries so the shared PGVector schema exists.
 
 ## Deploy Infrastructure
 
@@ -144,3 +166,40 @@ bq query --use_legacy_sql=false \
    ORDER BY timestamp DESC
    LIMIT 10'
 ```
+
+## How to Test
+
+Run local validation before deployment:
+
+```bash
+terraform -chdir=terraform fmt -check
+terraform -chdir=terraform init -backend=false -input=false
+terraform -chdir=terraform validate
+
+cd functions/ingestion
+python3 -m venv venv
+source venv/bin/activate
+python -m pip install -r requirements.txt
+python -m pytest test_utils.py -v
+
+cd ../../app
+npm ci
+npm test
+npm run build
+```
+
+Check deployed resource health after deployment:
+
+```bash
+gcloud functions describe vertex-rag-ingestion \
+  --region=us-central1 \
+  --format='value(state,serviceConfig.availableMemory,serviceConfig.timeoutSeconds)'
+
+gcloud run services describe vertex-rag-app \
+  --region=us-central1 \
+  --format='value(status.latestReadyRevisionName,status.traffic[0].percent,status.url)'
+
+bq show vertex-enterprise-rag:llm_ops_telemetry.prompt_logs
+```
+
+Direct local calls to the default Cloud Run URL may return 404 because ingress is intentionally limited to internal and load-balancer traffic. Test `/ask` from an allowed internal client or through the configured external HTTPS load balancer/IAP path.
