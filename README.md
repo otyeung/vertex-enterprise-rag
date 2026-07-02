@@ -8,19 +8,16 @@ This repository demonstrates a secure Retrieval-Augmented Generation landing zon
 
 | Layer | Resource or Tool | Role | Purpose | Used by |
 | --- | --- | --- | --- | --- |
-| Infrastructure | Terraform + Google Cloud provider | Deployment orchestrator | Provisions the complete landing zone repeatably: networking, IAM, storage, database, telemetry, and serverless runtimes. | Platform engineers and customer engineering teams. |
+| Infrastructure | Terraform + Google Cloud provider | Deployment orchestrator | Provisions the complete landing zone repeatably: IAM, storage, Vertex AI Vector Search, telemetry, and serverless runtimes. | Platform engineers and customer engineering teams. |
 | Compute | Cloud Run | Agent API runtime | Hosts the TypeScript Express/LangChain RAG API that receives `POST /ask` requests and returns grounded answers with sources. | Enterprise users through an internal client, load balancer, or IAP-protected entry point. |
 | Compute | Cloud Functions Gen 2 | Document ingestion runtime | Runs the Python PDF parser when new raw PDFs land in Cloud Storage. | Eventarc invokes it; the ingestion service account executes it. |
 | Events | Eventarc | Storage event router | Converts Cloud Storage object-finalized events into ingestion function invocations. | Cloud Storage publishes events; Cloud Functions receives them. |
 | AI/ML | Vertex AI Gemini 1.5 Pro | Reasoning and answer generation model | Generates enterprise-context-grounded responses from retrieved chunks. | Cloud Run app through the app service account. |
-| AI/ML | Vertex AI Text Embeddings (`textembedding-gecko@latest`) | Embedding model | Converts document chunks and user queries into vectors for similarity search. | Cloud Function during ingestion and Cloud Run during retrieval. |
-| Vector Store | Cloud SQL for PostgreSQL + pgvector | Implemented vector database | Stores chunk text, metadata, and embeddings in the same customer-controlled Google Cloud project. | Cloud Function writes vectors; Cloud Run retrieves the top 5 chunks. |
-| Vector Store | Vertex AI Vector Search | Managed vector-search alternative | A production alternative for teams that want a fully managed vector index instead of pgvector. This blueprint uses pgvector to keep the database path inspectable and Terraform-friendly. | Cloud Run would query it if replacing the Cloud SQL pgvector retriever. |
-| Storage | Cloud Storage | Raw document landing zone | Stores uploaded enterprise PDFs before ingestion. | Enterprise users or systems upload PDFs; Cloud Function reads them. |
+| AI/ML | Vertex AI Text Embeddings (`text-embedding-005`) | Embedding model | Converts document chunks and user queries into vectors for similarity search. | Cloud Function during ingestion and Cloud Run during retrieval. |
+| Vector Store | Vertex AI Vector Search | Implemented managed vector index | Stores document chunk embeddings for low-latency nearest-neighbor retrieval without operating a database. | Cloud Function upserts datapoints; Cloud Run retrieves the top 5 neighbor IDs. |
+| Storage | Cloud Storage | Raw document and chunk storage | Stores uploaded enterprise PDFs plus JSON chunk payloads keyed by Vector Search datapoint ID. | Enterprise users or systems upload PDFs; Cloud Function reads PDFs and writes chunks; Cloud Run reads retrieved chunks. |
 | Telemetry | BigQuery | LLMOps and governance store | Stores prompt, response, token, latency, user, and status telemetry in `llm_ops_telemetry.prompt_logs`. | Cloud Run writes rows; business, governance, and platform stakeholders query metrics. |
 | Security | IAM service accounts and roles | Least-privilege identity boundary | Separates ingestion permissions from runtime app permissions and limits access to only required APIs. | Terraform creates bindings; Google Cloud enforces access at runtime. |
-| Security | Secret Manager | Secret storage | Stores the generated PostgreSQL password without committing credentials to code or images. | Cloud Function and Cloud Run read the secret at runtime. |
-| Networking | Private Service Access + Serverless VPC Access | Private connectivity path | Lets serverless workloads reach private Cloud SQL without exposing the database publicly. | Cloud Function and Cloud Run use the VPC connector. |
 | Container Supply Chain | Artifact Registry | Container image registry | Stores the built Cloud Run app image. | Cloud Build pushes images; Cloud Run pulls them. |
 | Build | Cloud Build | Container builder | Builds the production Node.js image from `app/Dockerfile`. | Developers run `gcloud builds submit`; Cloud Run deploys the produced image. |
 
@@ -31,24 +28,25 @@ graph TD
     User[Enterprise User] -->|POST /ask| Run[Cloud Run Express RAG API]
     GCS[Cloud Storage Raw PDF Bucket] -->|Eventarc object finalized| Fn[Cloud Function Gen 2 Ingestion]
     Fn -->|Extract and chunk PDF| Split[LangChain Text Splitter]
-    Split -->|Embed chunks| Embed[Vertex AI Gecko Embeddings]
-    Embed -->|Store vectors| SQL[(Cloud SQL PostgreSQL + pgvector)]
-    Run -->|Retrieve top 5 chunks| SQL
+    Split -->|Embed chunks| Embed[Vertex AI Text Embeddings]
+    Embed -->|Upsert datapoints| VS[(Vertex AI Vector Search)]
+    Fn -->|Store chunk payloads| ChunkGCS[Cloud Storage Chunk Bucket]
+    Run -->|Retrieve top 5 neighbor IDs| VS
+    Run -->|Read chunk payloads| ChunkGCS
     Run -->|Grounded answer| Gemini[Vertex AI Gemini 1.5 Pro]
     Run -->|Prompt logs, tokens, latency| BQ[(BigQuery llm_ops_telemetry.prompt_logs)]
     IAM[IAM Service Accounts] -.-> GCS
     IAM -.-> Fn
     IAM -.-> Run
-    IAM -.-> SQL
+    IAM -.-> VS
+    IAM -.-> ChunkGCS
 ```
 
 ## Security and Governance
 
 - Terraform provisions separate service accounts for ingestion and app runtimes.
-- Cloud SQL uses private IP through Private Service Access.
-- Cloud Run and Cloud Functions reach private resources through Serverless VPC Access.
-- GCS enforces uniform bucket-level access and public access prevention.
-- Database credentials are generated by Terraform and stored in Secret Manager.
+- Cloud Storage enforces uniform bucket-level access and public access prevention for raw PDFs and retrieved chunk payloads.
+- Vertex AI Vector Search keeps embeddings in a managed Google Cloud index rather than a self-managed vector database.
 - The app relies on Cloud Run IAM and Google Cloud perimeter controls instead of an application-level API key.
 - Customer documents, embeddings, prompts, responses, and telemetry stay inside project `vertex-enterprise-rag` in region `us-central1`, except for managed Google Cloud control-plane operations.
 
@@ -56,7 +54,7 @@ graph TD
 
 - Google Cloud project: `vertex-enterprise-rag`
 - Billing enabled
-- `gcloud` authenticated with permissions to create IAM, networking, Cloud SQL, Cloud Run, Cloud Functions, BigQuery, Secret Manager, Artifact Registry, and GCS resources
+- `gcloud` authenticated with permissions to create IAM, Vertex AI, Cloud Run, Cloud Functions, BigQuery, Artifact Registry, and GCS resources
 - Terraform Google provider credentials configured with Application Default Credentials:
   `gcloud auth application-default login`
 - Terraform 1.6+
@@ -72,12 +70,12 @@ graph TD
 4. Query `POST /ask` from an internal Google Cloud client or through a load balancer/IAP path.
 5. Review prompt, response, token, latency, and status telemetry in BigQuery.
 
-The detailed copy-paste commands below follow that order. The ingestion function should be triggered at least once before the app handles real queries so the shared PGVector schema exists.
+The detailed copy-paste commands below follow that order. Terraform deploys the streaming Vector Search index and endpoint before the ingestion function upserts document vectors.
 
 ## Step-by-Step Execution Plan
 
-1. **Infrastructure Code:** Use Terraform to provision Cloud Storage, BigQuery, Cloud SQL with pgvector, Cloud Run, Cloud Functions support, IAM service accounts, Secret Manager, and private networking. This is the core customer-engineering proof point because the deployment is auditable and repeatable.
-2. **Ingestion Pipeline:** Upload PDFs to Cloud Storage, trigger the Python Cloud Function with Eventarc, chunk documents with LangChain, generate Vertex AI embeddings, and persist vectors to pgvector.
+1. **Infrastructure Code:** Use Terraform to provision Cloud Storage, BigQuery, Vertex AI Vector Search, Cloud Run, Cloud Functions support, and IAM service accounts. This is the core customer-engineering proof point because the deployment is auditable and repeatable.
+2. **Ingestion Pipeline:** Upload PDFs to Cloud Storage, trigger the Python Cloud Function with Eventarc, chunk documents with LangChain, generate Vertex AI embeddings, write chunk payloads to Cloud Storage, and upsert vectors to Vertex AI Vector Search.
 3. **Agent App:** Deploy the TypeScript Express/LangChain API to Cloud Run, connect it to Vertex AI instead of OpenAI, retrieve enterprise context, and answer from Gemini 1.5 Pro.
 4. **LLMOps Integration:** Log each RAG request to BigQuery with `user_id`, prompt, response, token counts, latency, and status for adoption and ROI reporting.
 5. **README Pitch:** Present the repo as a golden-path blueprint for customers blocked by infosec concerns: fast time-to-value, Terraform-driven deployment orchestration, least-privilege IAM, and data sovereignty inside the customer Google Cloud project.
@@ -96,16 +94,15 @@ Capture outputs:
 RAW_BUCKET="$(terraform -chdir=terraform output -raw raw_bucket_name)"
 INGESTION_SA="$(terraform -chdir=terraform output -raw ingestion_service_account_email)"
 APP_SA="$(terraform -chdir=terraform output -raw app_service_account_email)"
-DB_HOST="$(terraform -chdir=terraform output -raw cloud_sql_private_ip)"
-DB_NAME="$(terraform -chdir=terraform output -raw database_name)"
-DB_USER="$(terraform -chdir=terraform output -raw database_user)"
-DB_SECRET="$(terraform -chdir=terraform output -raw db_password_secret_id)"
-VPC_CONNECTOR="$(terraform -chdir=terraform output -raw vpc_connector_id)"
+VECTOR_CHUNKS_BUCKET="$(terraform -chdir=terraform output -raw vector_chunks_bucket_name)"
+VECTOR_SEARCH_INDEX="$(terraform -chdir=terraform output -raw vector_search_index_name)"
+VECTOR_SEARCH_INDEX_ENDPOINT="$(terraform -chdir=terraform output -raw vector_search_index_endpoint_name)"
+VECTOR_SEARCH_DEPLOYED_INDEX_ID="$(terraform -chdir=terraform output -raw vector_search_deployed_index_id)"
 ```
 
 ## Deploy Ingestion Function
 
-The ingestion function provisions the shared PGVector schema tables (`langchain_pg_embedding` and `langchain_pg_collection`) on first execution. Deploy and trigger this function before deploying the Cloud Run app to ensure the retriever can connect to existing tables.
+The ingestion function writes each chunk payload to Cloud Storage and upserts its embedding to the Terraform-managed Vertex AI Vector Search index.
 
 ```bash
 gcloud functions deploy vertex-rag-ingestion \
@@ -118,19 +115,19 @@ gcloud functions deploy vertex-rag-ingestion \
   --entry-point=ingest_pdf \
   --trigger-bucket="${RAW_BUCKET}" \
   --service-account="${INGESTION_SA}" \
-  --vpc-connector="${VPC_CONNECTOR}" \
-  --egress-settings=private-ranges-only \
-  --set-env-vars="GCP_PROJECT_ID=vertex-enterprise-rag,GCP_REGION=us-central1,DB_HOST=${DB_HOST},DB_PORT=5432,DB_NAME=${DB_NAME},DB_USER=${DB_USER},PGVECTOR_COLLECTION=enterprise_documents" \
-  --set-secrets="DB_PASSWORD=${DB_SECRET}:latest"
+  --clear-secrets \
+  --clear-vpc-connector \
+  --set-env-vars="GCP_PROJECT_ID=vertex-enterprise-rag,GCP_REGION=us-central1,VECTOR_SEARCH_INDEX_ID=${VECTOR_SEARCH_INDEX},VECTOR_CHUNKS_BUCKET=${VECTOR_CHUNKS_BUCKET}"
 ```
 
-After deploying the function, upload a real PDF to trigger schema provisioning:
+After deploying the function, upload a PDF to trigger ingestion. This repository includes `1706.03762v7.pdf` as one example, but you can bring your own PDF and upload it to the same raw bucket path.
 
 ```bash
-gcloud storage cp ./sample.pdf "gs://${RAW_BUCKET}/sample.pdf"
+RAW_BUCKET="$(terraform -chdir=terraform output -raw raw_bucket_name)"
+gcloud storage cp ./1706.03762v7.pdf "gs://${RAW_BUCKET}/papers/1706.03762v7.pdf"
 ```
 
-Wait for the ingestion function to complete (check Cloud Functions logs). The Node.js retriever in the Cloud Run app expects these tables to exist at startup.
+Wait for the ingestion function to complete (check Cloud Functions logs). The Cloud Run retriever queries Vector Search for neighbor IDs and then reads matching chunk payloads from the chunk bucket.
 
 ## Build and Deploy Cloud Run App
 
@@ -145,19 +142,23 @@ gcloud run deploy vertex-rag-app \
   --image="${IMAGE}" \
   --region="${REGION}" \
   --service-account="${APP_SA}" \
-  --vpc-connector="${VPC_CONNECTOR}" \
-  --vpc-egress=private-ranges-only \
   --ingress=internal-and-cloud-load-balancing \
   --no-allow-unauthenticated \
-  --set-env-vars="GCP_PROJECT_ID=${PROJECT_ID},GCP_REGION=${REGION},DB_HOST=${DB_HOST},DB_PORT=5432,DB_NAME=${DB_NAME},DB_USER=${DB_USER},BQ_DATASET=llm_ops_telemetry,BQ_TABLE=prompt_logs,PGVECTOR_COLLECTION=enterprise_documents" \
-  --set-secrets="DB_PASSWORD=${DB_SECRET}:latest"
+  --clear-secrets \
+  --clear-vpc-connector \
+  --set-env-vars="GCP_PROJECT_ID=${PROJECT_ID},GCP_REGION=${REGION},BQ_DATASET=llm_ops_telemetry,BQ_TABLE=prompt_logs,VECTOR_SEARCH_INDEX_ENDPOINT_ID=${VECTOR_SEARCH_INDEX_ENDPOINT},VECTOR_SEARCH_DEPLOYED_INDEX_ID=${VECTOR_SEARCH_DEPLOYED_INDEX_ID},VECTOR_CHUNKS_BUCKET=${VECTOR_CHUNKS_BUCKET}"
 ```
 
 ## Upload a PDF
 
+Get the raw PDF bucket name from Terraform before uploading:
+
 ```bash
-gcloud storage cp ./sample.pdf "gs://${RAW_BUCKET}/sample.pdf"
+RAW_BUCKET="$(terraform -chdir=terraform output -raw raw_bucket_name)"
+gcloud storage cp ./1706.03762v7.pdf "gs://${RAW_BUCKET}/papers/1706.03762v7.pdf"
 ```
+
+`1706.03762v7.pdf` is the `Attention Is All You Need` paper (arXiv:1706.03762), included as a sample document for testing. It is useful for RAG validation because it contains multi-column layouts, mathematical formulas, tables, and dense technical terminology. This is only one example; you can bring your own PDF and upload it with the same command pattern.
 
 ## Query the API
 
@@ -175,9 +176,10 @@ curl -X POST "${SERVICE_URL}/ask" \
 
 ## RAG Evaluation: Attention Is All You Need
 
-Use the `Attention Is All You Need` paper as a concrete RAG test document. Place a local copy named `1706.03762v7.pdf` in the repository root, upload it to the raw PDF bucket, wait for the ingestion function to finish, then run the queries below through `POST /ask`.
+Use the `Attention Is All You Need` paper as a concrete RAG test document. Upload the repository copy named `1706.03762v7.pdf` to the raw PDF bucket, wait for the ingestion function to finish, then run the queries below through `POST /ask`.
 
 ```bash
+RAW_BUCKET="$(terraform -chdir=terraform output -raw raw_bucket_name)"
 gcloud storage cp ./1706.03762v7.pdf "gs://${RAW_BUCKET}/papers/1706.03762v7.pdf"
 ```
 
@@ -241,6 +243,14 @@ gcloud run services describe vertex-rag-app \
   --format='value(status.latestReadyRevisionName,status.traffic[0].percent,status.url)'
 
 bq show vertex-enterprise-rag:llm_ops_telemetry.prompt_logs
+
+gcloud ai indexes describe "$(basename "$(terraform -chdir=terraform output -raw vector_search_index_name)")" \
+  --region=us-central1 \
+  --format='value(displayName,indexUpdateMethod)'
+
+gcloud ai index-endpoints describe "$(basename "$(terraform -chdir=terraform output -raw vector_search_index_endpoint_name)")" \
+  --region=us-central1 \
+  --format='value(displayName,deployedIndexes[0].id)'
 ```
 
 Direct local calls to the default Cloud Run URL may return 404 because ingress is intentionally limited to internal and load-balancer traffic. Test `/ask` from an allowed internal client or through the configured external HTTPS load balancer/IAP path.
