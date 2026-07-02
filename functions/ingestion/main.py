@@ -1,14 +1,21 @@
+import json
 import os
 from pathlib import Path
 
 import functions_framework
+from google.cloud import aiplatform
 from google.cloud import storage
 from langchain_community.document_loaders import PyPDFLoader
-from langchain_google_vertexai import VertexAIEmbeddings
-from langchain_postgres import PGVector
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+from vertexai.language_models import TextEmbeddingModel
 
-from utils import build_postgres_connection_string, extract_storage_object
+from utils import (
+    build_chunk_payload,
+    build_vector_search_index_resource,
+    extract_storage_object,
+    make_datapoint_id,
+    vector_chunk_object_name,
+)
 
 
 def _download_pdf(bucket_name: str, object_name: str) -> Path:
@@ -29,24 +36,54 @@ def _load_and_split_pdf(local_path: Path):
     return splitter.split_documents(documents)
 
 
-def _write_documents(chunks):
-    # SHARED SCHEMA CONTRACT: This PGVector configuration MUST match the Node.js
-    # retrieval service (app/src/vector-store.ts) which uses @langchain/community
-    # PGVectorStore with the same table names and collection name.
-    # Both libraries share the physical PostgreSQL tables via convention.
-    # - Default table: "langchain_pg_embedding" (via LangChain defaults)
-    # - Default collection table: "langchain_pg_collection" (via LangChain defaults)
-    # - collection_name: "enterprise_documents" (or PGVECTOR_COLLECTION env var)
-    # Changes to this schema must be coordinated across both Python and Node.js code paths.
-    embeddings = VertexAIEmbeddings(model_name="textembedding-gecko@latest")
-    vector_store = PGVector(
-        embeddings=embeddings,
-        collection_name=os.environ.get("PGVECTOR_COLLECTION", "enterprise_documents"),
-        connection=build_postgres_connection_string(),
-        use_jsonb=True,
-        create_extension=True,
+def _require_vector_chunks_bucket() -> str:
+    bucket_name = os.environ.get("VECTOR_CHUNKS_BUCKET")
+    if not bucket_name:
+        raise RuntimeError("Missing Vector Search environment variables: VECTOR_CHUNKS_BUCKET")
+    return bucket_name
+
+
+def _make_index_datapoint(datapoint_id: str, vector: list[float]):
+    return aiplatform.compat.types.index_v1.IndexDatapoint(
+        datapoint_id=datapoint_id,
+        feature_vector=vector,
     )
-    vector_store.add_documents(chunks)
+
+
+def _write_documents(storage_object, chunks):
+    aiplatform.init(
+        project=os.environ.get("GCP_PROJECT_ID"),
+        location=os.environ.get("GCP_REGION"),
+    )
+    embedding_model = TextEmbeddingModel.from_pretrained("text-embedding-005")
+    vectors = [
+        embedding.values
+        for embedding in embedding_model.get_embeddings(
+            [chunk.page_content for chunk in chunks]
+        )
+    ]
+
+    storage_client = storage.Client()
+    chunk_bucket = storage_client.bucket(_require_vector_chunks_bucket())
+    datapoints = []
+
+    for index, (chunk, vector) in enumerate(zip(chunks, vectors)):
+        datapoint_id = make_datapoint_id(storage_object.bucket, storage_object.name, index)
+        chunk_bucket.blob(vector_chunk_object_name(datapoint_id)).upload_from_string(
+            json.dumps(
+                build_chunk_payload(
+                    page_content=chunk.page_content,
+                    metadata=dict(chunk.metadata),
+                )
+            ),
+            content_type="application/json",
+        )
+        datapoints.append(_make_index_datapoint(datapoint_id, vector))
+
+    vector_index = aiplatform.MatchingEngineIndex(
+        index_name=build_vector_search_index_resource()
+    )
+    vector_index.upsert_datapoints(datapoints=datapoints)
 
 
 @functions_framework.cloud_event
@@ -68,7 +105,7 @@ def ingest_pdf(cloud_event):
             chunk.metadata["source_bucket"] = storage_object.bucket
             chunk.metadata["source_object"] = storage_object.name
 
-        _write_documents(chunks)
+        _write_documents(storage_object, chunks)
         print(
             f"Ingested {len(chunks)} chunks from gs://{storage_object.bucket}/{storage_object.name}"
         )

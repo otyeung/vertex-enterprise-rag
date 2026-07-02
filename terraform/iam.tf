@@ -17,20 +17,16 @@ data "google_storage_project_service_account" "gcs_account" {
 locals {
   ingestion_project_roles = toset([
     "roles/aiplatform.user",
-    "roles/cloudsql.client",
     "roles/eventarc.eventReceiver",
     "roles/logging.logWriter",
-    "roles/run.invoker",
-    "roles/secretmanager.secretAccessor"
+    "roles/run.invoker"
   ])
 
   app_project_roles = toset([
     "roles/aiplatform.user",
     "roles/bigquery.dataEditor",
     "roles/bigquery.jobUser",
-    "roles/cloudsql.client",
-    "roles/logging.logWriter",
-    "roles/secretmanager.secretAccessor"
+    "roles/logging.logWriter"
   ])
 }
 
@@ -56,18 +52,16 @@ resource "google_storage_bucket_iam_member" "ingestion_raw_pdf_viewer" {
   member = "serviceAccount:${google_service_account.ingestion.email}"
 }
 
-resource "google_secret_manager_secret_iam_member" "ingestion_db_password" {
-  project   = var.project_id
-  secret_id = google_secret_manager_secret.db_password.secret_id
-  role      = "roles/secretmanager.secretAccessor"
-  member    = "serviceAccount:${google_service_account.ingestion.email}"
+resource "google_storage_bucket_iam_member" "ingestion_vector_chunks_admin" {
+  bucket = google_storage_bucket.vector_chunks.name
+  role   = "roles/storage.objectAdmin"
+  member = "serviceAccount:${google_service_account.ingestion.email}"
 }
 
-resource "google_secret_manager_secret_iam_member" "app_db_password" {
-  project   = var.project_id
-  secret_id = google_secret_manager_secret.db_password.secret_id
-  role      = "roles/secretmanager.secretAccessor"
-  member    = "serviceAccount:${google_service_account.app.email}"
+resource "google_storage_bucket_iam_member" "app_vector_chunks_viewer" {
+  bucket = google_storage_bucket.vector_chunks.name
+  role   = "roles/storage.objectViewer"
+  member = "serviceAccount:${google_service_account.app.email}"
 }
 
 # Eventarc Gen2 GCS trigger prerequisites:

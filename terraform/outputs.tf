@@ -13,29 +13,24 @@ output "ingestion_service_account_email" {
   description = "Cloud Function ingestion service account."
 }
 
-output "cloud_sql_instance_connection_name" {
-  value       = google_sql_database_instance.postgres.connection_name
-  description = "Cloud SQL instance connection name."
+output "vector_chunks_bucket_name" {
+  value       = google_storage_bucket.vector_chunks.name
+  description = "Bucket containing retrievable chunk payloads keyed by Vector Search datapoint ID."
 }
 
-output "cloud_sql_private_ip" {
-  value       = google_sql_database_instance.postgres.private_ip_address
-  description = "Cloud SQL private IP address."
+output "vector_search_index_name" {
+  value       = google_vertex_ai_index.documents.name
+  description = "Vertex AI Vector Search index resource name."
 }
 
-output "database_name" {
-  value       = google_sql_database.app.name
-  description = "Application database name."
+output "vector_search_index_endpoint_name" {
+  value       = google_vertex_ai_index_endpoint.documents.name
+  description = "Vertex AI Vector Search index endpoint resource name."
 }
 
-output "database_user" {
-  value       = google_sql_user.app_user.name
-  description = "Application database user."
-}
-
-output "db_password_secret_id" {
-  value       = google_secret_manager_secret.db_password.secret_id
-  description = "Secret Manager secret ID for the database password."
+output "vector_search_deployed_index_id" {
+  value       = var.vector_search_deployed_index_id
+  description = "Deployed index ID used for Vector Search queries."
 }
 
 output "bigquery_dataset_id" {
@@ -61,9 +56,4 @@ output "cloud_run_service_name" {
 output "cloud_run_service_uri" {
   value       = google_cloud_run_v2_service.app.uri
   description = "Cloud Run service URI."
-}
-
-output "vpc_connector_id" {
-  value       = google_vpc_access_connector.serverless.id
-  description = "Serverless VPC Access connector ID."
 }

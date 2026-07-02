@@ -14,6 +14,8 @@ app/dist/
 terraform/.terraform/
 terraform/terraform.tfstate
 terraform/terraform.tfstate.backup
+terraform/terraform.tfstate.*.backup
 terraform/*.tfplan
+terraform/tfplan
 functions/ingestion/venv/
 .pytest_cache/

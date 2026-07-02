@@ -6,14 +6,6 @@ terraform {
       source  = "hashicorp/google"
       version = "~> 5.30"
     }
-    random = {
-      source  = "hashicorp/random"
-      version = "~> 3.6"
-    }
-    null = {
-      source  = "hashicorp/null"
-      version = "~> 3.2"
-    }
   }
 }
 
@@ -41,11 +33,7 @@ locals {
     "cloudresourcemanager.googleapis.com",
     "eventarc.googleapis.com",
     "run.googleapis.com",
-    "secretmanager.googleapis.com",
-    "servicenetworking.googleapis.com",
-    "sqladmin.googleapis.com",
     "storage.googleapis.com",
-    "vpcaccess.googleapis.com"
   ])
 }
 
@@ -57,45 +45,6 @@ resource "google_project_service" "required" {
   disable_on_destroy = false
 }
 
-resource "google_compute_network" "main" {
-  name                    = "${var.name_prefix}-vpc"
-  auto_create_subnetworks = false
-
-  depends_on = [google_project_service.required]
-}
-
-resource "google_compute_subnetwork" "serverless" {
-  name          = "${var.name_prefix}-serverless-subnet"
-  ip_cidr_range = "10.10.0.0/24"
-  region        = var.region
-  network       = google_compute_network.main.id
-}
-
-resource "google_compute_global_address" "private_services" {
-  name          = "${var.name_prefix}-private-services"
-  purpose       = "VPC_PEERING"
-  address_type  = "INTERNAL"
-  prefix_length = 16
-  network       = google_compute_network.main.id
-}
-
-resource "google_service_networking_connection" "private_vpc_connection" {
-  network                 = google_compute_network.main.id
-  service                 = "servicenetworking.googleapis.com"
-  reserved_peering_ranges = [google_compute_global_address.private_services.name]
-}
-
-resource "google_vpc_access_connector" "serverless" {
-  name          = "${var.name_prefix}-connector"
-  region        = var.region
-  network       = google_compute_network.main.name
-  ip_cidr_range = "10.8.0.0/28"
-  min_instances = 2
-  max_instances = 3
-
-  depends_on = [google_project_service.required]
-}
-
 resource "google_storage_bucket" "raw_documents" {
   name                        = "${var.project_id}-${var.name_prefix}-raw-pdfs"
   location                    = var.region
@@ -105,6 +54,92 @@ resource "google_storage_bucket" "raw_documents" {
   labels                      = local.labels
 
   depends_on = [google_project_service.required]
+}
+
+resource "google_storage_bucket" "vector_chunks" {
+  name                        = "${var.project_id}-${var.name_prefix}-vector-chunks"
+  location                    = var.region
+  uniform_bucket_level_access = true
+  public_access_prevention    = "enforced"
+  force_destroy               = var.force_destroy
+  labels                      = local.labels
+
+  depends_on = [google_project_service.required]
+}
+
+resource "google_storage_bucket_object" "vector_index_bootstrap" {
+  name         = "indexes/bootstrap/data.json"
+  bucket       = google_storage_bucket.vector_chunks.name
+  content_type = "application/json"
+  content = "${jsonencode({
+    id        = "__bootstrap__"
+    embedding = [for _ in range(var.embedding_dimensions) : 0]
+  })}\n"
+}
+
+resource "google_vertex_ai_index" "documents" {
+  region              = var.region
+  display_name        = "${var.name_prefix}-documents"
+  description         = "Streaming Vertex AI Vector Search index for enterprise document chunks."
+  labels              = local.labels
+  index_update_method = "STREAM_UPDATE"
+
+  metadata {
+    contents_delta_uri = "gs://${google_storage_bucket.vector_chunks.name}/indexes/bootstrap"
+
+    config {
+      dimensions                  = var.embedding_dimensions
+      approximate_neighbors_count = var.vector_search_approximate_neighbors_count
+      distance_measure_type       = "DOT_PRODUCT_DISTANCE"
+
+      algorithm_config {
+        tree_ah_config {
+          leaf_node_embedding_count    = var.vector_search_leaf_node_embedding_count
+          leaf_nodes_to_search_percent = var.vector_search_leaf_nodes_to_search_percent
+        }
+      }
+    }
+  }
+
+  timeouts {
+    create = "2h"
+    update = "1h"
+    delete = "1h"
+  }
+
+  depends_on = [
+    google_project_service.required,
+    google_storage_bucket_object.vector_index_bootstrap
+  ]
+}
+
+resource "google_vertex_ai_index_endpoint" "documents" {
+  region                  = var.region
+  display_name            = "${var.name_prefix}-documents-endpoint"
+  description             = "Vertex AI Vector Search endpoint for enterprise document retrieval."
+  public_endpoint_enabled = true
+  labels                  = local.labels
+
+  depends_on = [google_project_service.required]
+}
+
+resource "google_vertex_ai_index_endpoint_deployed_index" "documents" {
+  index_endpoint        = google_vertex_ai_index_endpoint.documents.id
+  index                 = google_vertex_ai_index.documents.id
+  deployed_index_id     = var.vector_search_deployed_index_id
+  display_name          = "${var.name_prefix}-enterprise-documents"
+  enable_access_logging = true
+
+  automatic_resources {
+    min_replica_count = var.vector_search_min_replica_count
+    max_replica_count = var.vector_search_max_replica_count
+  }
+
+  timeouts {
+    create = "2h"
+    update = "1h"
+    delete = "1h"
+  }
 }
 
 resource "google_artifact_registry_repository" "app" {
@@ -134,11 +169,6 @@ resource "google_cloud_run_v2_service" "app" {
       max_instance_count = 5
     }
 
-    vpc_access {
-      connector = google_vpc_access_connector.serverless.id
-      egress    = "PRIVATE_RANGES_ONLY"
-    }
-
     containers {
       image = var.bootstrap_image
 
@@ -155,31 +185,6 @@ resource "google_cloud_run_v2_service" "app" {
         value = var.region
       }
       env {
-        name  = "DB_HOST"
-        value = google_sql_database_instance.postgres.private_ip_address
-      }
-      env {
-        name  = "DB_PORT"
-        value = "5432"
-      }
-      env {
-        name  = "DB_NAME"
-        value = google_sql_database.app.name
-      }
-      env {
-        name  = "DB_USER"
-        value = google_sql_user.app_user.name
-      }
-      env {
-        name = "DB_PASSWORD"
-        value_source {
-          secret_key_ref {
-            secret  = google_secret_manager_secret.db_password.secret_id
-            version = "latest"
-          }
-        }
-      }
-      env {
         name  = "BQ_DATASET"
         value = google_bigquery_dataset.llm_ops.dataset_id
       }
@@ -188,8 +193,16 @@ resource "google_cloud_run_v2_service" "app" {
         value = google_bigquery_table.prompt_logs.table_id
       }
       env {
-        name  = "PGVECTOR_COLLECTION"
-        value = "enterprise_documents"
+        name  = "VECTOR_SEARCH_INDEX_ENDPOINT_ID"
+        value = google_vertex_ai_index_endpoint.documents.name
+      }
+      env {
+        name  = "VECTOR_SEARCH_DEPLOYED_INDEX_ID"
+        value = var.vector_search_deployed_index_id
+      }
+      env {
+        name  = "VECTOR_CHUNKS_BUCKET"
+        value = google_storage_bucket.vector_chunks.name
       }
     }
   }
@@ -198,12 +211,14 @@ resource "google_cloud_run_v2_service" "app" {
   # from reverting images deployed via `gcloud run deploy` CI/CD pipelines.
   lifecycle {
     ignore_changes = [
+      client,
+      client_version,
       template[0].containers[0].image
     ]
   }
 
   depends_on = [
     google_project_service.required,
-    google_secret_manager_secret_iam_member.app_db_password
+    google_vertex_ai_index_endpoint_deployed_index.documents
   ]
 }

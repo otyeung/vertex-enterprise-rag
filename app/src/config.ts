@@ -3,11 +3,9 @@ import "dotenv/config";
 const requiredKeys = [
   "GCP_PROJECT_ID",
   "GCP_REGION",
-  "DB_HOST",
-  "DB_PORT",
-  "DB_NAME",
-  "DB_USER",
-  "DB_PASSWORD",
+  "VECTOR_SEARCH_INDEX_ENDPOINT_ID",
+  "VECTOR_SEARCH_DEPLOYED_INDEX_ID",
+  "VECTOR_CHUNKS_BUCKET",
   "BQ_DATASET",
   "BQ_TABLE"
 ] as const;
@@ -15,10 +13,11 @@ const requiredKeys = [
 export interface AppConfig {
   projectId: string;
   region: string;
-  databaseUrl: string;
   bigQueryDataset: string;
   bigQueryTable: string;
-  pgVectorCollection: string;
+  vectorSearchIndexEndpointId: string;
+  vectorSearchDeployedIndexId: string;
+  vectorChunksBucket: string;
   port: number;
 }
 
@@ -28,19 +27,14 @@ export function getConfig(): AppConfig {
     throw new Error(`Missing required environment variables: ${missing.join(", ")}`);
   }
 
-  const user = encodeURIComponent(process.env.DB_USER as string);
-  const password = encodeURIComponent(process.env.DB_PASSWORD as string);
-  const host = process.env.DB_HOST as string;
-  const port = process.env.DB_PORT as string;
-  const database = process.env.DB_NAME as string;
-
   return {
     projectId: process.env.GCP_PROJECT_ID as string,
     region: process.env.GCP_REGION as string,
-    databaseUrl: `postgresql://${user}:${password}@${host}:${port}/${database}`,
     bigQueryDataset: process.env.BQ_DATASET as string,
     bigQueryTable: process.env.BQ_TABLE as string,
-    pgVectorCollection: process.env.PGVECTOR_COLLECTION ?? "enterprise_documents",
+    vectorSearchIndexEndpointId: process.env.VECTOR_SEARCH_INDEX_ENDPOINT_ID as string,
+    vectorSearchDeployedIndexId: process.env.VECTOR_SEARCH_DEPLOYED_INDEX_ID as string,
+    vectorChunksBucket: process.env.VECTOR_CHUNKS_BUCKET as string,
     port: Number(process.env.PORT ?? "8080")
   };
 }

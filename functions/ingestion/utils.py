@@ -1,6 +1,7 @@
 from dataclasses import dataclass
+import hashlib
 from os import environ
-from urllib.parse import quote_plus
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -17,17 +18,35 @@ def extract_storage_object(event_data: dict) -> StorageObject:
     return StorageObject(bucket=bucket, name=name)
 
 
-def build_postgres_connection_string() -> str:
-    required_keys = ["DB_HOST", "DB_PORT", "DB_NAME", "DB_USER", "DB_PASSWORD"]
+def build_vector_search_index_resource() -> str:
+    index_id = environ.get("VECTOR_SEARCH_INDEX_ID")
+    if index_id and index_id.startswith("projects/"):
+        return index_id
+
+    required_keys = ["GCP_PROJECT_ID", "GCP_REGION", "VECTOR_SEARCH_INDEX_ID"]
     missing = [key for key in required_keys if not environ.get(key)]
     if missing:
         raise RuntimeError(
-            "Missing database environment variables: " + ", ".join(sorted(missing))
+            "Missing Vector Search environment variables: " + ", ".join(sorted(missing))
         )
 
-    user = quote_plus(environ["DB_USER"])
-    password = quote_plus(environ["DB_PASSWORD"])
-    host = environ["DB_HOST"]
-    port = environ["DB_PORT"]
-    database = environ["DB_NAME"]
-    return f"postgresql+psycopg://{user}:{password}@{host}:{port}/{database}"
+    return (
+        f"projects/{environ['GCP_PROJECT_ID']}/locations/{environ['GCP_REGION']}"
+        f"/indexes/{environ['VECTOR_SEARCH_INDEX_ID']}"
+    )
+
+
+def make_datapoint_id(bucket: str, object_name: str, chunk_index: int) -> str:
+    digest = hashlib.sha256(f"{bucket}/{object_name}#{chunk_index}".encode("utf-8")).hexdigest()
+    return f"chunk_{digest}"
+
+
+def vector_chunk_object_name(datapoint_id: str) -> str:
+    return f"chunks/{datapoint_id}.json"
+
+
+def build_chunk_payload(page_content: str, metadata: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "pageContent": page_content,
+        "metadata": metadata,
+    }

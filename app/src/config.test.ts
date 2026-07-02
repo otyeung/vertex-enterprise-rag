@@ -17,24 +17,22 @@ describe("Config validation", () => {
       ...originalEnv,
       GCP_PROJECT_ID: "test-project",
       GCP_REGION: "us-central1",
-      DB_HOST: "localhost",
-      DB_PORT: "5432",
-      DB_NAME: "testdb",
-      DB_USER: "testuser",
-      DB_PASSWORD: "testpass",
       BQ_DATASET: "testdataset",
       BQ_TABLE: "testtable",
-      PGVECTOR_COLLECTION: "enterprise_documents"
+      VECTOR_SEARCH_INDEX_ENDPOINT_ID: "123456789",
+      VECTOR_SEARCH_DEPLOYED_INDEX_ID: "enterprise_documents",
+      VECTOR_CHUNKS_BUCKET: "test-vector-chunks"
     };
 
     const config = getConfig();
 
     expect(config.projectId).toBe("test-project");
     expect(config.region).toBe("us-central1");
-    expect(config.databaseUrl).toContain("postgresql://");
     expect(config.bigQueryDataset).toBe("testdataset");
     expect(config.bigQueryTable).toBe("testtable");
-    expect(config.pgVectorCollection).toBe("enterprise_documents");
+    expect(config.vectorSearchIndexEndpointId).toBe("123456789");
+    expect(config.vectorSearchDeployedIndexId).toBe("enterprise_documents");
+    expect(config.vectorChunksBucket).toBe("test-vector-chunks");
     expect(config.port).toBeTypeOf("number");
 
     process.env = originalEnv;
