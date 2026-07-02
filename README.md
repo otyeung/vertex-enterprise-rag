@@ -12,7 +12,7 @@ This repository demonstrates a secure Retrieval-Augmented Generation landing zon
 | Compute | Cloud Run | Agent API runtime | Hosts the TypeScript Express/LangChain RAG API that receives `POST /ask` requests and returns grounded answers with sources. | Enterprise users through an internal client, load balancer, or IAP-protected entry point. |
 | Compute | Cloud Functions Gen 2 | Document ingestion runtime | Runs the Python PDF parser when new raw PDFs land in Cloud Storage. | Eventarc invokes it; the ingestion service account executes it. |
 | Events | Eventarc | Storage event router | Converts Cloud Storage object-finalized events into ingestion function invocations. | Cloud Storage publishes events; Cloud Functions receives them. |
-| AI/ML | Vertex AI Gemini 1.5 Pro | Reasoning and answer generation model | Generates enterprise-context-grounded responses from retrieved chunks. | Cloud Run app through the app service account. |
+| AI/ML | Vertex AI Gemini 2.5 Flash (`gemini-2.5-flash`) | Reasoning and answer generation model | Generates enterprise-context-grounded responses from retrieved chunks. | Cloud Run app through the app service account. |
 | AI/ML | Vertex AI Text Embeddings (`text-embedding-005`) | Embedding model | Converts document chunks and user queries into vectors for similarity search. | Cloud Function during ingestion and Cloud Run during retrieval. |
 | Vector Store | Vertex AI Vector Search | Implemented managed vector index | Stores document chunk embeddings for low-latency nearest-neighbor retrieval without operating a database. | Cloud Function upserts datapoints; Cloud Run retrieves the top 5 neighbor IDs. |
 | Storage | Cloud Storage | Raw document and chunk storage | Stores uploaded enterprise PDFs plus JSON chunk payloads keyed by Vector Search datapoint ID. | Enterprise users or systems upload PDFs; Cloud Function reads PDFs and writes chunks; Cloud Run reads retrieved chunks. |
@@ -33,7 +33,7 @@ graph TD
     Fn -->|Store chunk payloads| ChunkGCS[Cloud Storage Chunk Bucket]
     Run -->|Retrieve top 5 neighbor IDs| VS
     Run -->|Read chunk payloads| ChunkGCS
-    Run -->|Grounded answer| Gemini[Vertex AI Gemini 1.5 Pro]
+    Run -->|Grounded answer| Gemini[Vertex AI Gemini 2.5 Flash]
     Run -->|Prompt logs, tokens, latency| BQ[(BigQuery llm_ops_telemetry.prompt_logs)]
     IAM[IAM Service Accounts] -.-> GCS
     IAM -.-> Fn
@@ -76,7 +76,7 @@ The detailed copy-paste commands below follow that order. Terraform deploys the 
 
 1. **Infrastructure Code:** Use Terraform to provision Cloud Storage, BigQuery, Vertex AI Vector Search, Cloud Run, Cloud Functions support, and IAM service accounts. This is the core customer-engineering proof point because the deployment is auditable and repeatable.
 2. **Ingestion Pipeline:** Upload PDFs to Cloud Storage, trigger the Python Cloud Function with Eventarc, chunk documents with LangChain, generate Vertex AI embeddings, write chunk payloads to Cloud Storage, and upsert vectors to Vertex AI Vector Search.
-3. **Agent App:** Deploy the TypeScript Express/LangChain API to Cloud Run, connect it to Vertex AI instead of OpenAI, retrieve enterprise context, and answer from Gemini 1.5 Pro.
+3. **Agent App:** Deploy the TypeScript Express/LangChain API to Cloud Run, connect it to Vertex AI instead of OpenAI, retrieve enterprise context, and answer from Gemini 2.5 Flash.
 4. **LLMOps Integration:** Log each RAG request to BigQuery with `user_id`, prompt, response, token counts, latency, and status for adoption and ROI reporting.
 5. **README Pitch:** Present the repo as a golden-path blueprint for customers blocked by infosec concerns: fast time-to-value, Terraform-driven deployment orchestration, least-privilege IAM, and data sovereignty inside the customer Google Cloud project.
 
@@ -97,6 +97,7 @@ APP_SA="$(terraform -chdir=terraform output -raw app_service_account_email)"
 VECTOR_CHUNKS_BUCKET="$(terraform -chdir=terraform output -raw vector_chunks_bucket_name)"
 VECTOR_SEARCH_INDEX="$(terraform -chdir=terraform output -raw vector_search_index_name)"
 VECTOR_SEARCH_INDEX_ENDPOINT="$(terraform -chdir=terraform output -raw vector_search_index_endpoint_name)"
+VECTOR_SEARCH_PUBLIC_ENDPOINT_DOMAIN="$(terraform -chdir=terraform output -raw vector_search_public_endpoint_domain_name)"
 VECTOR_SEARCH_DEPLOYED_INDEX_ID="$(terraform -chdir=terraform output -raw vector_search_deployed_index_id)"
 ```
 
@@ -142,11 +143,11 @@ gcloud run deploy vertex-rag-app \
   --image="${IMAGE}" \
   --region="${REGION}" \
   --service-account="${APP_SA}" \
-  --ingress=internal-and-cloud-load-balancing \
+  --ingress=all \
   --no-allow-unauthenticated \
   --clear-secrets \
   --clear-vpc-connector \
-  --set-env-vars="GCP_PROJECT_ID=${PROJECT_ID},GCP_REGION=${REGION},BQ_DATASET=llm_ops_telemetry,BQ_TABLE=prompt_logs,VECTOR_SEARCH_INDEX_ENDPOINT_ID=${VECTOR_SEARCH_INDEX_ENDPOINT},VECTOR_SEARCH_DEPLOYED_INDEX_ID=${VECTOR_SEARCH_DEPLOYED_INDEX_ID},VECTOR_CHUNKS_BUCKET=${VECTOR_CHUNKS_BUCKET}"
+  --set-env-vars="GCP_PROJECT_ID=${PROJECT_ID},GCP_REGION=${REGION},BQ_DATASET=llm_ops_telemetry,BQ_TABLE=prompt_logs,VECTOR_SEARCH_INDEX_ENDPOINT_ID=${VECTOR_SEARCH_INDEX_ENDPOINT},VECTOR_SEARCH_PUBLIC_ENDPOINT_DOMAIN_NAME=${VECTOR_SEARCH_PUBLIC_ENDPOINT_DOMAIN},VECTOR_SEARCH_DEPLOYED_INDEX_ID=${VECTOR_SEARCH_DEPLOYED_INDEX_ID},VECTOR_CHUNKS_BUCKET=${VECTOR_CHUNKS_BUCKET}"
 ```
 
 ## Upload a PDF
@@ -162,17 +163,33 @@ gcloud storage cp ./1706.03762v7.pdf "gs://${RAW_BUCKET}/papers/1706.03762v7.pdf
 
 ## Query the API
 
-The Cloud Run service is deployed with internal-and-load-balancer ingress for the enterprise blueprint. Call it from an internal Google Cloud client or through an HTTPS load balancer/IAP in front of Cloud Run. Direct local calls to the default `run.app` URL may return 404 because external ingress is intentionally blocked.
+Current developer path: the Cloud Run service uses public ingress but still requires IAM authentication (`--no-allow-unauthenticated`). This lets a developer call the API from a local terminal with a Google identity token while preserving Cloud Run IAM access control.
 
 ```bash
-SERVICE_URL="$(gcloud run services describe vertex-rag-app --region=us-central1 --format='value(status.url)')"
+PROJECT_ID="vertex-enterprise-rag"
+REGION="us-central1"
+SERVICE_URL="$(gcloud run services describe vertex-rag-app --project="${PROJECT_ID}" --region="${REGION}" --format='value(status.url)')"
 TOKEN="$(gcloud auth print-identity-token)"
 
 curl -X POST "${SERVICE_URL}/ask" \
-  -H "Authorization: ******" \
+  -H "Authorization: Bearer ${TOKEN}" \
   -H "Content-Type: application/json" \
   -d '{"query":"What controls are described in the uploaded documents?","user_id":"demo-user"}'
 ```
+
+Recommended enterprise path for production: put an external HTTPS Load Balancer with Identity-Aware Proxy (IAP) in front of Cloud Run, then have users call the load balancer URL instead of the default `run.app` URL.
+
+High-level production steps:
+
+1. Reserve a global static IP address and map a DNS name such as `rag.example.com`.
+2. Create a Google-managed SSL certificate for that DNS name.
+3. Create a serverless Network Endpoint Group (NEG) that targets `vertex-rag-app`.
+4. Create a backend service using that serverless NEG.
+5. Enable IAP on the backend service and configure the OAuth consent screen / OAuth client if required by the project.
+6. Grant `roles/iap.httpsResourceAccessor` only to the enterprise users or groups allowed to use the RAG API.
+7. Create an HTTPS target proxy and forwarding rule that point to the backend service.
+8. Change Cloud Run ingress back to `internal-and-cloud-load-balancing` after the load balancer path is verified.
+9. Set `SERVICE_URL` to the HTTPS load balancer URL and keep using the same `POST /ask` request shape.
 
 ## RAG Evaluation: Attention Is All You Need
 
@@ -191,13 +208,38 @@ gcloud storage cp ./1706.03762v7.pdf "gs://${RAW_BUCKET}/papers/1706.03762v7.pdf
 | 4 | Detail the architectural differences between the encoder and decoder stacks in the Transformer. Specifically, what additional sub-layer is introduced in the decoder, and how is the self-attention mechanism modified to preserve the auto-regressive property? | Structural understanding of encoder/decoder architecture and masking. |
 | 5 | Since the Transformer dispenses with recurrence and convolutions, how does it inject information about the sequence order of the tokens? Describe the specific mathematical functions and dimensions used for this mechanism. | Specific design-choice retrieval for positional encoding equations and dimensions. |
 
-Example request shape:
+Exact local developer-path curl commands for the five sample queries:
 
 ```bash
+PROJECT_ID="vertex-enterprise-rag"
+REGION="us-central1"
+SERVICE_URL="$(gcloud run services describe vertex-rag-app --project="${PROJECT_ID}" --region="${REGION}" --format='value(status.url)')"
+TOKEN="$(gcloud auth print-identity-token)"
+
 curl -X POST "${SERVICE_URL}/ask" \
-  -H "Authorization: ******" \
+  -H "Authorization: Bearer ${TOKEN}" \
   -H "Content-Type: application/json" \
-  -d '{"query":"Explain the mathematical formulation of Scaled Dot-Product Attention as described in the paper.","user_id":"rag-eval"}'
+  -d '{"query":"What specific hardware setup and optimizer were used to train the base and big Transformer models? Additionally, how long did the training take for each model, and what were their final BLEU scores on the WMT 2014 English-to-German dataset?","user_id":"readme-q1"}'
+
+curl -X POST "${SERVICE_URL}/ask" \
+  -H "Authorization: Bearer ${TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{"query":"Explain the mathematical formulation of \"Scaled Dot-Product Attention\" as described in the paper. Why did the authors find it necessary to scale the dot products by the inverse square root of d_k compared to standard additive attention?","user_id":"readme-q2"}'
+
+curl -X POST "${SERVICE_URL}/ask" \
+  -H "Authorization: Bearer ${TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{"query":"According to Section 4 and Table 1, how does a self-attention layer compare to recurrent and convolutional layers across the three desiderata evaluated by the authors: computational complexity per layer, minimum number of sequential operations, and maximum path length?","user_id":"readme-q3"}'
+
+curl -X POST "${SERVICE_URL}/ask" \
+  -H "Authorization: Bearer ${TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{"query":"Detail the architectural differences between the encoder and decoder stacks in the Transformer. Specifically, what additional sub-layer is introduced in the decoder, and how is the self-attention mechanism modified to preserve the auto-regressive property?","user_id":"readme-q4"}'
+
+curl -X POST "${SERVICE_URL}/ask" \
+  -H "Authorization: Bearer ${TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{"query":"Since the Transformer dispenses with recurrence and convolutions, how does it inject information about the sequence order of the tokens? Describe the specific mathematical functions and dimensions used for this mechanism.","user_id":"readme-q5"}'
 ```
 
 ## Validate Telemetry
