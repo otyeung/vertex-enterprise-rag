@@ -28,30 +28,18 @@ This repository demonstrates a secure Retrieval-Augmented Generation landing zon
 
 ```mermaid
 graph TD
-    subgraph GCP["Google Cloud Platform (Deployed via Terraform)"]
-        subgraph Ingestion["Data Ingestion Pipeline"]
-            GCS[Cloud Storage Bucket<br>Raw PDFs] -->|Eventarc object finalized| Fn[Cloud Function Gen 2<br>Document Parser]
-            Fn -->|Extract and chunk| Split[LangChain<br>Text Splitter]
-            Split -->|Embed chunks| Embed[Vertex AI<br>Text Embeddings]
-            Embed -->|Store vectors| VectorDB[(Cloud SQL PostgreSQL<br>pgvector)]
-        end
-
-        subgraph App["Application Layer"]
-            User[Enterprise User] -->|Internal client / IAP / Load Balancer| Run[Cloud Run<br>Express LangChain RAG API]
-            Run -->|Retrieve top 5 chunks| VectorDB
-            Run -->|Grounded prompt| Gemini[Vertex AI<br>Gemini 1.5 Pro]
-        end
-
-        subgraph Gov["LLMOps and Governance"]
-            Run -->|Log prompts, tokens, latency, status| BQ[(BigQuery<br>prompt_logs)]
-            IAM[IAM Roles and<br>Service Accounts] -.->|Least privilege| GCS
-            IAM -.-> Fn
-            IAM -.-> Run
-            IAM -.-> VectorDB
-            Secret[Secret Manager<br>DB Password] -.-> Fn
-            Secret -.-> Run
-        end
-    end
+    User[Enterprise User] -->|POST /ask| Run[Cloud Run Express RAG API]
+    GCS[Cloud Storage Raw PDF Bucket] -->|Eventarc object finalized| Fn[Cloud Function Gen 2 Ingestion]
+    Fn -->|Extract and chunk PDF| Split[LangChain Text Splitter]
+    Split -->|Embed chunks| Embed[Vertex AI Gecko Embeddings]
+    Embed -->|Store vectors| SQL[(Cloud SQL PostgreSQL + pgvector)]
+    Run -->|Retrieve top 5 chunks| SQL
+    Run -->|Grounded answer| Gemini[Vertex AI Gemini 1.5 Pro]
+    Run -->|Prompt logs, tokens, latency| BQ[(BigQuery llm_ops_telemetry.prompt_logs)]
+    IAM[IAM Service Accounts] -.-> GCS
+    IAM -.-> Fn
+    IAM -.-> Run
+    IAM -.-> SQL
 ```
 
 ## Security and Governance
