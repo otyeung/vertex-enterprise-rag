@@ -20,6 +20,7 @@ describe("Config validation", () => {
       BQ_DATASET: "testdataset",
       BQ_TABLE: "testtable",
       VECTOR_SEARCH_INDEX_ENDPOINT_ID: "123456789",
+      VECTOR_SEARCH_PUBLIC_ENDPOINT_DOMAIN_NAME: "123.us-central1-456.vdb.vertexai.goog",
       VECTOR_SEARCH_DEPLOYED_INDEX_ID: "enterprise_documents",
       VECTOR_CHUNKS_BUCKET: "test-vector-chunks"
     };
@@ -31,6 +32,7 @@ describe("Config validation", () => {
     expect(config.bigQueryDataset).toBe("testdataset");
     expect(config.bigQueryTable).toBe("testtable");
     expect(config.vectorSearchIndexEndpointId).toBe("123456789");
+    expect(config.vectorSearchPublicEndpointDomainName).toBe("123.us-central1-456.vdb.vertexai.goog");
     expect(config.vectorSearchDeployedIndexId).toBe("enterprise_documents");
     expect(config.vectorChunksBucket).toBe("test-vector-chunks");
     expect(config.port).toBeTypeOf("number");

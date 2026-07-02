@@ -1,7 +1,7 @@
-import { MatchServiceClient } from "@google-cloud/aiplatform";
 import { Storage } from "@google-cloud/storage";
 import { VertexAIEmbeddings } from "@langchain/google-vertexai";
 import type { Document } from "@langchain/core/documents";
+import { GoogleAuth } from "google-auth-library";
 
 import { getConfig } from "./config.js";
 
@@ -34,15 +34,22 @@ export interface VectorSearchResponse {
     neighbors?: Array<{
       datapoint?: {
         datapointId?: string | null;
+        datapoint_id?: string | null;
+      } | null;
+    }> | null;
+  }> | null;
+  nearest_neighbors?: Array<{
+    neighbors?: Array<{
+      datapoint?: {
+        datapointId?: string | null;
+        datapoint_id?: string | null;
       } | null;
     }> | null;
   }> | null;
 }
 
 export interface VectorSearchClient {
-  findNeighbors(
-    request: VectorSearchRequest
-  ): Promise<VectorSearchResponse | [VectorSearchResponse, unknown, unknown]>;
+  findNeighbors(request: VectorSearchRequest): Promise<VectorSearchResponse>;
 }
 
 export interface ChunkStore {
@@ -57,21 +64,92 @@ export interface VectorSearchRetrieverDependencies {
   neighborCount?: number;
 }
 
+export type AuthHeaders = Record<string, string> | Headers;
+
+export interface AuthClient {
+  getRequestHeaders(): Promise<AuthHeaders>;
+}
+
+export interface FetchResponse {
+  ok: boolean;
+  status: number;
+  text(): Promise<string>;
+}
+
+export type FetchFn = (
+  url: string,
+  init: {
+    method: "POST";
+    headers: Record<string, string>;
+    body: string;
+  }
+) => Promise<FetchResponse>;
+
+export interface PublicEndpointVectorSearchClientOptions {
+  publicEndpointDomainName: string;
+  indexEndpoint: string;
+  auth: AuthClient;
+  fetchFn?: FetchFn;
+}
+
 export function vectorChunkObjectName(datapointId: string): string {
   return `chunks/${datapointId}.json`;
 }
 
 function normalizeFindNeighborsResponse(
-  response: VectorSearchResponse | [VectorSearchResponse, unknown, unknown]
+  response: VectorSearchResponse
 ): VectorSearchResponse {
-  return Array.isArray(response) ? response[0] : response;
+  return response;
 }
 
 function extractDatapointIds(response: VectorSearchResponse): string[] {
-  return (response.nearestNeighbors?.[0]?.neighbors ?? [])
-    .map((neighbor) => neighbor.datapoint?.datapointId)
+  return ((response.nearestNeighbors ?? response.nearest_neighbors)?.[0]?.neighbors ?? [])
+    .map((neighbor) => neighbor.datapoint?.datapointId ?? neighbor.datapoint?.datapoint_id)
     .filter((datapointId): datapointId is string => Boolean(datapointId))
     .filter((datapointId) => datapointId !== BOOTSTRAP_DATAPOINT_ID);
+}
+
+export function createPublicEndpointVectorSearchClient({
+  publicEndpointDomainName,
+  indexEndpoint,
+  auth,
+  fetchFn = fetch as FetchFn
+}: PublicEndpointVectorSearchClientOptions): VectorSearchClient {
+  return {
+    async findNeighbors(request): Promise<VectorSearchResponse> {
+      const rawAuthHeaders = await auth.getRequestHeaders();
+      const authHeaders =
+        rawAuthHeaders instanceof Headers
+          ? Object.fromEntries(rawAuthHeaders.entries())
+          : rawAuthHeaders;
+      const response = await fetchFn(
+        `https://${publicEndpointDomainName}/v1/${indexEndpoint}:findNeighbors`,
+        {
+          method: "POST",
+          headers: {
+            ...authHeaders,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            deployed_index_id: request.deployedIndexId,
+            queries: request.queries.map((query) => ({
+              datapoint: {
+                feature_vector: query.datapoint.featureVector
+              },
+              neighbor_count: query.neighborCount
+            })),
+            return_full_datapoint: request.returnFullDatapoint
+          })
+        }
+      );
+      const body = await response.text();
+      if (!response.ok) {
+        throw new Error(`Vector Search findNeighbors failed with HTTP ${response.status}: ${body}`);
+      }
+
+      return JSON.parse(body) as VectorSearchResponse;
+    }
+  };
 }
 
 export function createVectorSearchRetriever({
@@ -141,8 +219,8 @@ export async function getRetriever(): Promise<ReturnType<typeof createVectorSear
   if (!retrieverPromise) {
     retrieverPromise = (async () => {
       const config = getConfig();
-      const vectorSearchClient = new MatchServiceClient({
-        apiEndpoint: `${config.region}-aiplatform.googleapis.com`
+      const auth = new GoogleAuth({
+        scopes: ["https://www.googleapis.com/auth/cloud-platform"]
       });
       const indexEndpoint = indexEndpointResourceName(config);
 
@@ -151,14 +229,11 @@ export async function getRetriever(): Promise<ReturnType<typeof createVectorSear
         embeddings: new VertexAIEmbeddings({
           model: "text-embedding-005"
         }),
-        vectorSearch: {
-          async findNeighbors(request) {
-            return vectorSearchClient.findNeighbors({
-              ...request,
-              indexEndpoint
-            });
-          }
-        },
+        vectorSearch: createPublicEndpointVectorSearchClient({
+          publicEndpointDomainName: config.vectorSearchPublicEndpointDomainName,
+          indexEndpoint,
+          auth
+        }),
         chunkStore: createGcsChunkStore(config.vectorChunksBucket)
       });
     })().catch((error) => {

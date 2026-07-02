@@ -37,7 +37,7 @@ variable "bootstrap_image" {
 variable "cloud_run_ingress" {
   description = "Cloud Run ingress setting."
   type        = string
-  default     = "INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER"
+  default     = "INGRESS_TRAFFIC_ALL"
 }
 
 variable "embedding_dimensions" {

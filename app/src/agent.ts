@@ -77,7 +77,7 @@ export async function runRagQuery(query: string): Promise<RagResult> {
   const context = formatDocuments(documents);
 
   const model = new ChatVertexAI({
-    model: "gemini-1.5-pro",
+    model: "gemini-2.5-flash",
     location: config.region,
     temperature: 0,
     maxRetries: 2

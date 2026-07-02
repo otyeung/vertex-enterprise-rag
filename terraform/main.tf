@@ -197,6 +197,10 @@ resource "google_cloud_run_v2_service" "app" {
         value = google_vertex_ai_index_endpoint.documents.name
       }
       env {
+        name  = "VECTOR_SEARCH_PUBLIC_ENDPOINT_DOMAIN_NAME"
+        value = google_vertex_ai_index_endpoint.documents.public_endpoint_domain_name
+      }
+      env {
         name  = "VECTOR_SEARCH_DEPLOYED_INDEX_ID"
         value = var.vector_search_deployed_index_id
       }

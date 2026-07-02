@@ -28,6 +28,11 @@ output "vector_search_index_endpoint_name" {
   description = "Vertex AI Vector Search index endpoint resource name."
 }
 
+output "vector_search_public_endpoint_domain_name" {
+  value       = google_vertex_ai_index_endpoint.documents.public_endpoint_domain_name
+  description = "Public domain name used to query the Vertex AI Vector Search endpoint."
+}
+
 output "vector_search_deployed_index_id" {
   value       = var.vector_search_deployed_index_id
   description = "Deployed index ID used for Vector Search queries."
