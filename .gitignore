@@ -1,5 +1,6 @@
 docs/
 value_props.md
+.DS_Store
 .worktrees/
 .terraform/
 node_modules/
